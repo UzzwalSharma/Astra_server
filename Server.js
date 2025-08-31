@@ -14,7 +14,10 @@ console.log(accountSid, authToken);
 // API route
 app.post("/send-message", async (req, res) => {
   try {
-    const { to, message } = req.body;
+    let { to, message } = req.body;
+
+    // Always prepend +91
+    to = `+91${to}`;
 
     const result = await client.messages.create({
       from: process.env.TWILIO_NUMBER, // your Twilio phone number
