@@ -1,34 +1,55 @@
 import express from "express";
 import bodyParser from "body-parser";
-import twilio from "twilio";
+import cors from "cors";
 import dotenv from "dotenv";
+import { StreamChat } from "stream-chat";
+
 dotenv.config();
 
 const app = express();
 app.use(bodyParser.json());
+app.use(cors());
 
-const accountSid = process.env.TWILIO_SID;
-const authToken = process.env.TWILIO_AUTH;
-const client = twilio(accountSid, authToken);
-console.log(accountSid, authToken);
-// API route
-app.post("/send-message", async (req, res) => {
+// Stream Admin Client
+const serverClient = StreamChat.getInstance(
+  process.env.STREAM_API_KEY,
+  process.env.STREAM_API_SECRET
+);
+
+// Token endpoint for connecting users
+app.get("/token/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const { name } = req.query;
+
+  if (!userId || !name) return res.status(400).json({ error: "userId and name are required" });
+
   try {
-    let { to, message } = req.body;
+    await serverClient.upsertUser({ id: userId, name });
 
-    // Always prepend +91
-    to = `+91${to}`;
-
-    const result = await client.messages.create({
-      from: process.env.TWILIO_NUMBER, // your Twilio phone number
-      to,
-      body: message,
+    const channel = serverClient.channel("messaging", "astra-support", {
+      name: "Astra Support",
+      members: [userId],
     });
+    await channel.create({ created_by_id: "admin", exists: true });
+    await channel.addMembers([userId]);
 
-    res.json({ success: true, sid: result.sid });
+    const token = serverClient.createToken(userId);
+    res.json({ token });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Truncate channel (admin-only)
+app.post("/truncate-channel", async (req, res) => {
+  try {
+    const channel = serverClient.channel("messaging", "astra-support");
+    await channel.truncate(); // admin API key bypasses permissions
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
