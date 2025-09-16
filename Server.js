@@ -4,6 +4,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { StreamChat } from "stream-chat";
 import axios from "axios";
+
 dotenv.config();
 
 const app = express();
@@ -80,7 +81,7 @@ app.get("/leaders", async (req, res) => {
       if (data.items && data.items.length > 0) {
         results[q] = {
           title: data.items[0].title,
-          snippet: data.items[0].snippet,
+          // snippet: data.items[0].snippet,
           link: data.items[0].link,
           
         };
@@ -93,6 +94,107 @@ app.get("/leaders", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to fetch leaders from Google" });
+  }
+});
+
+//Gemini endpoint 
+
+// helper to convert image URL → base64
+async function fetchImageAsBase64(imageUrl) {
+  const res = await fetch(imageUrl);
+  const buffer = await res.arrayBuffer();
+  return Buffer.from(buffer).toString("base64");
+}
+
+app.post("/gemini", async (req, res) => {
+  const { imageUrl } = req.body;
+
+  if (!imageUrl) {
+    return res.status(400).json({ error: "imageUrl is required" });
+  }
+
+  const PROMPT = `You are an AI image safety analyzer for an emergency reporting app.
+
+Task: Analyze the uploaded image and classify it.
+
+Rules:
+- VALID images are only those that clearly show real-world emergency or civic issues involving people, property, or environment.
+- SPAM includes: 
+  - Animals (pets, wildlife, etc.)
+  - AI-generated or cartoon/fake images
+  - Random objects (tables, cups, chairs, laptops, etc.)
+  - Selfies or unrelated personal photos
+  - Anything not clearly connected to theft, harassment, accident, violence, bullying, garbage, fire outbreak, water leakage, or similar emergencies.
+
+Respond **strictly** in this format:
+TITLE: (short emergency title OR "SPAM")
+TYPE: (Theft, Harassment, Accident, Violence, Bullying, Garbage, Fire outbreak, Water Leakage, Other) OR "SPAM"
+DESCRIPTION: (concise description OR "SPAM")`;
+
+  try {
+    // fetch and encode image
+    const base64 = await fetchImageAsBase64(imageUrl);
+
+    // call Gemini
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: "image/jpeg",
+                    data: base64,
+                  },
+                },
+                { text: PROMPT },
+              ],
+            },
+          ],
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    // raw Gemini text response
+    const text =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text || "TITLE: SPAM\nTYPE: SPAM\nDESCRIPTION: SPAM";
+
+    // parse response line by line
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+    let title = "";
+    let type = "";
+    let description = "";
+
+    for (const line of lines) {
+      if (line.toUpperCase().startsWith("TITLE:")) {
+        title = line.replace(/TITLE:\s*/i, "");
+      } else if (line.toUpperCase().startsWith("TYPE:")) {
+        type = line.replace(/TYPE:\s*/i, "");
+      } else if (line.toUpperCase().startsWith("DESCRIPTION:")) {
+        description = line.replace(/DESCRIPTION:\s*/i, "");
+      }
+    }
+
+    // spam normalization
+    if (
+      title.toUpperCase() === "SPAM" ||
+      type.toUpperCase() === "SPAM" ||
+      description.toUpperCase() === "SPAM"
+    ) {
+      return res.json({ title: "SPAM", type: "SPAM", description: "SPAM" });
+    }
+
+    res.json({ title, type, description });
+  } catch (err) {
+    console.error("Gemini error:", err);
+    res.status(500).json({ error: "Failed to call Gemini API" });
   }
 });
 
