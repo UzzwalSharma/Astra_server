@@ -136,28 +136,34 @@ DESCRIPTION: (concise description OR "SPAM")`;
     const base64 = await fetchImageAsBase64(imageUrl);
 
     // call Gemini
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
+   const response = await fetch(
+  `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+  {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [
             {
-              parts: [
-                {
-                  inlineData: {
-                    mimeType: "image/jpeg",
-                    data: base64,
-                  },
-                },
-                { text: PROMPT },
-              ],
+              inlineData: {
+                // 🔑 Detect format from URL instead of hardcoding jpeg
+                mimeType: imageUrl.endsWith(".png") ? "image/png" : "image/jpeg",
+                data: base64,
+              },
             },
           ],
-        }),
-      }
-    );
+        },
+        {
+          parts: [
+            { text: PROMPT },
+          ],
+        },
+      ],
+    }),
+  }
+);
+
 
     const data = await response.json();
 
