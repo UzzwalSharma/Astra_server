@@ -108,92 +108,84 @@ async function fetchImageAsBase64(imageUrl) {
 
 app.post("/gemini", async (req, res) => {
   const { imageUrl } = req.body;
-
-  if (!imageUrl) {
-    return res.status(400).json({ error: "imageUrl is required" });
-  }
-
-  const PROMPT = `You are an AI image safety analyzer for an emergency reporting app.
-
-Task: Analyze the uploaded image and classify it.
-
-Rules:
-- VALID images are only those that clearly show real-world emergency or civic issues involving people, property, or environment.
-- SPAM includes: 
-  - Animals (pets, wildlife, etc.)
-  - AI-generated or cartoon/fake images
-  - Random objects (tables, cups, chairs, laptops, etc.)
-  - Selfies or unrelated personal photos
-  - Anything not clearly connected to theft, harassment, accident, violence, bullying, garbage, fire outbreak, water leakage, or similar emergencies.
-
-Respond **strictly** in this format:
-TITLE: (short emergency title OR "SPAM")
-TYPE: (Theft, Harassment, Accident, Violence, Bullying, Garbage, Fire outbreak, Water Leakage, Other) OR "SPAM"
-DESCRIPTION: (concise description OR "SPAM")`;
+  if (!imageUrl) return res.status(400).json({ error: "imageUrl is required" });
 
   try {
-    // fetch and encode image
+    // ---- STEP 1: Fetch + Encode Image ----
     const base64 = await fetchImageAsBase64(imageUrl);
+    console.log("Base64 length:", base64.length);
 
-    // call Gemini
-   const response = await fetch(
-  `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-  {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [
+    // ---- STEP 2: Ask Gemini to Describe ----
+    const PROMPT_DESCRIBE = "Describe what is visible in this image in 1-2 sentences.";
+    const describeResp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
             {
-              inlineData: {
-                // 🔑 Detect format from URL instead of hardcoding jpeg
-                mimeType: imageUrl.endsWith(".png") ? "image/png" : "image/jpeg",
-                data: base64,
-              },
+              parts: [
+                { text: PROMPT_DESCRIBE },
+                {
+                  inlineData: {
+                    mimeType: getMimeType(imageUrl),
+                    data: base64,
+                  },
+                },
+              ],
             },
           ],
-        },
-        {
-          parts: [
-            { text: PROMPT },
-          ],
-        },
-      ],
-    }),
-  }
-);
-
-
-    const data = await response.json();
-
-    // raw Gemini text response
-    const text =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text || "TITLE: SPAM\nTYPE: SPAM\nDESCRIPTION: SPAM";
-
-    // parse response line by line
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-
-    let title = "";
-    let type = "";
-    let description = "";
-
-    for (const line of lines) {
-      if (line.toUpperCase().startsWith("TITLE:")) {
-        title = line.replace(/TITLE:\s*/i, "");
-      } else if (line.toUpperCase().startsWith("TYPE:")) {
-        type = line.replace(/TYPE:\s*/i, "");
-      } else if (line.toUpperCase().startsWith("DESCRIPTION:")) {
-        description = line.replace(/DESCRIPTION:\s*/i, "");
+        }),
       }
+    );
+
+    const describeData = await describeResp.json();
+    const descriptionText =
+      describeData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    console.log("Step 1 - Description:", descriptionText);
+
+    // ---- STEP 3: Ask Gemini to Classify ----
+    const PROMPT_CLASSIFY = `You are classifying emergency reports.
+Based on this description: "${descriptionText}"
+
+Classify strictly in this format:
+TITLE: short emergency title OR "SPAM"
+TYPE: (Theft, Harassment, Accident, Violence, Bullying, Garbage, Fire outbreak, Water Leakage, Other, SPAM)
+DESCRIPTION: concise description OR "SPAM"
+
+If the description clearly relates to emergencies (fire, garbage, accident, etc.) classify accordingly.
+If unrelated, output SPAM.`;
+
+    const classifyResp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: PROMPT_CLASSIFY }] }],
+        }),
+      }
+    );
+
+    const classifyData = await classifyResp.json();
+    console.log("Step 2 - Raw classify:", JSON.stringify(classifyData, null, 2));
+
+    const text =
+      classifyData?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "TITLE: SPAM\nTYPE: SPAM\nDESCRIPTION: SPAM";
+
+    // ---- STEP 4: Parse structured fields ----
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    let title = "", type = "", description = "";
+    for (const line of lines) {
+      if (line.toUpperCase().startsWith("TITLE:")) title = line.replace(/TITLE:\s*/i, "");
+      if (line.toUpperCase().startsWith("TYPE:")) type = line.replace(/TYPE:\s*/i, "");
+      if (line.toUpperCase().startsWith("DESCRIPTION:")) description = line.replace(/DESCRIPTION:\s*/i, "");
     }
 
-    // spam normalization
-    if (
-      title.toUpperCase() === "SPAM" ||
-      type.toUpperCase() === "SPAM" ||
-      description.toUpperCase() === "SPAM"
-    ) {
+    // Fallback to SPAM if not classified properly
+    if (!title || !type || !description) {
       return res.json({ title: "SPAM", type: "SPAM", description: "SPAM" });
     }
 
@@ -203,6 +195,15 @@ DESCRIPTION: (concise description OR "SPAM")`;
     res.status(500).json({ error: "Failed to call Gemini API" });
   }
 });
+
+
+function getMimeType(url) {
+  if (/\.png($|\?)/i.test(url)) return "image/png";
+  if (/\.webp($|\?)/i.test(url)) return "image/webp";
+  if (/\.jpg($|\?|$)/i.test(url) || /\.jpeg($|\?)/i.test(url)) return "image/jpeg";
+  return "image/jpeg";
+}
+
 
 
 
